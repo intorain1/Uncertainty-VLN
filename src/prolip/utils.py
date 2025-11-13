@@ -1,0 +1,24 @@
+""" ProLIP util code
+Original code: https://github.com/mlfoundations/open_clip/blob/v2.24.0/src/open_clip/utils.py
+"""
+from itertools import repeat
+import collections.abc
+
+
+# From PyTorch internals
+def _ntuple(n):
+    def parse(x):
+        if isinstance(x, collections.abc.Iterable):
+            return x
+        return tuple(repeat(x, n))
+    return parse
+
+
+to_1tuple = _ntuple(1)
+to_2tuple = _ntuple(2)
+to_3tuple = _ntuple(3)
+to_4tuple = _ntuple(4)
+
+
+def to_ntuple(n, x):
+    return _ntuple(n)(x)
