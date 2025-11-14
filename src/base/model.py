@@ -9,7 +9,7 @@ import copy
 import math
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union, List
 
 import numpy as np
 import torch
@@ -23,9 +23,19 @@ except ImportError:
     import warnings
     warnings.warn("Failed to import `huggingface_hub`. `ProLIPHF.from_pretrained` might not work.")
 
-from .transformer import LayerNormFp32, LayerNorm, QuickGELU, Attention, VisionTransformer, TextTransformer
+from .transformer import LayerNormFp32, LayerNorm, QuickGELU, Attention, VisionTransformer, TextTransformer, TSTransformer
 from .utils import to_2tuple
 
+@dataclass
+class TScfg:
+    width: int = 768
+    layers: int = 4
+    heads: int = 8
+    mlp_ratio: float = 4.0
+    ls_init_value: Optional[float] = None  # layer scale initial value
+    pool_type: str = 'mean'  # 'cls', 'mean', 'max'
+    act_kwargs: Optional[dict] = None
+    norm_kwargs: Optional[dict] = None
 
 @dataclass
 class ProLIPVisionCfg:
@@ -191,6 +201,32 @@ def _build_text_tower(
     )
     return text
 
+def _build_TS_tower(
+        embeddim: int,
+        ts_cfg: TScfg,
+):
+    if isinstance(ts_cfg, dict):
+        ts_cfg = TScfg(**ts_cfg)
+
+    norm_layer = LayerNormFp32 if ts_cfg.norm_kwargs in (torch.float16, torch.bfloat16) else LayerNorm
+    if ts_cfg.norm_kwargs:
+        norm_layer = partial(norm_layer, **ts_cfg.norm_kwargs)
+    act_layer = QuickGELU
+    if ts_cfg.act_kwargs is not None:
+        act_layer = partial(act_layer, **ts_cfg.act_kwargs)
+
+    transformer = TSTransformer(
+        input_dim=embeddim,
+        width=ts_cfg.width,
+        layers=ts_cfg.layers,
+        heads=ts_cfg.heads,
+        mlp_ratio=ts_cfg.mlp_ratio,
+        ls_init_value=ts_cfg.ls_init_value,
+        pool_type=ts_cfg.pool_type,
+        act_layer=act_layer,
+        norm_layer=norm_layer,
+    )
+    return transformer
 
 class ProLIP(nn.Module):
     output_dict: torch.jit.Final[bool]
@@ -200,6 +236,7 @@ class ProLIP(nn.Module):
             embed_dim: int,
             vision_cfg: ProLIPVisionCfg,
             text_cfg: ProLIPTextCfg,
+            ts_cfg: TScfg,
             quick_gelu: bool = False,
             init_logit_scale: float = np.log(1 / 0.07),
             init_logit_bias: Optional[float] = None,
@@ -210,6 +247,10 @@ class ProLIP(nn.Module):
         self.output_dict = output_dict
         self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
         self.text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
+
+        self.ts_mean = _build_TS_tower(embed_dim, ts_cfg)
+        self.ts_std = _build_TS_tower(embed_dim, ts_cfg)
+
         self.context_length = self.text.context_length
         self.vocab_size = self.text.vocab_size
         self.logit_scale = None
@@ -244,9 +285,23 @@ class ProLIP(nn.Module):
             "mean": F.normalize(features["mean"], dim=-1) if normalize else features["mean"],
             "std": features.get("std")
         }
+    
+    def encode_seq_image(self, image_seq: torch.Tensor, mask: torch.Tensor = None, normalize: bool = False, image_mask_ratio: float = None):
+        batch_size, seq_len, C, H, W = image_seq.shape
+        image_seq = image_seq.view(batch_size * seq_len, C, H, W)
+        features = self.visual(image_seq, image_mask_ratio=image_mask_ratio)
+        mean = features["mean"].view(batch_size, seq_len, -1)
+        std = features['std'].view(batch_size, seq_len, -1) if 'std' in features else None
+        ts_features_mean = self.ts_mean(mean, attn_mask=mask)
+        ts_features_std = self.ts_std(std, attn_mask=mask) if std is not None else None
 
-    def get_logits(self, image, text):
-        image_features = self.encode_image(image, normalize=True)
+        return {
+            "mean": F.normalize(ts_features_mean, dim=-1) if normalize else ts_features_mean,
+            "std": ts_features_std
+        }
+
+    def get_logits(self, image_seq, text, mask):
+        image_features = self.encode_seq_image(image_seq, mask=mask, normalize=True)
         text_features = self.encode_text(text, normalize=True)
         image_logits = self.logit_scale.exp() * image_features @ text_features.T
         if self.logit_bias is not None:
@@ -256,11 +311,12 @@ class ProLIP(nn.Module):
 
     def forward(
             self,
-            image: Optional[torch.Tensor] = None,
+            image_seq: Optional[torch.Tensor] = None,
+            mask: Optional[torch.Tensor] = None,
             text: Optional[torch.Tensor] = None,
             image_mask_ratio: Optional[float] = None,
     ):
-        image_features = self.encode_image(image, normalize=True, image_mask_ratio=image_mask_ratio) if image is not None else None
+        image_features = self.encode_seq_image(image_seq, mask=mask, normalize=True, image_mask_ratio=image_mask_ratio) if image_seq is not None else None
         text_features = self.encode_text(text, normalize=True) if text is not None else None
 
         if self.output_dict:

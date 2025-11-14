@@ -219,6 +219,7 @@ class Transformer(nn.Module):
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
         for r in self.resblocks:
             if self.grad_checkpointing and not torch.jit.is_scripting():
+
                 # TODO: handle kwargs https://github.com/pytorch/pytorch/issues/79887#issuecomment-1161758372
                 x = checkpoint(r, x, None, None, attn_mask)
             else:
@@ -639,6 +640,7 @@ class TextTransformer(nn.Module):
         else:
             raise ValueError("{self.embed_unc=} {self.cls_emb=} is not supported.")
 
+        # print(x.shape, self.positional_embedding[:seq_len].shape)  # rasi --- IGNORE ---
         x = x + self.positional_embedding[:seq_len].to(cast_dtype)
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x, attn_mask=None)
@@ -678,3 +680,91 @@ class TextTransformer(nn.Module):
             return pooled, tokens
 
         return {"mean": pooled}
+
+class TSTransformer(nn.Module):
+    def __init__(
+            self,
+            input_dim: int,
+            width: int,
+            layers: int,
+            heads: int,
+            mlp_ratio: float = 4.0,
+            ls_init_value: float = None,
+            pool_type: str = 'mean',  # 'mean', 'cls', or 'max'
+            act_layer: Callable = nn.GELU,
+            norm_layer: Callable = LayerNorm,
+    ):
+        super().__init__()
+        self.pool_type = pool_type
+        self.heads = heads
+        self.input_proj = nn.Linear(input_dim, width) if input_dim != width else nn.Identity()
+        
+        self.pos_embed = nn.Parameter(torch.randn(1, 1024, input_dim) * 0.02)
+
+
+        if pool_type == 'cls':
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, width))
+        
+        self.transformer = Transformer(
+            width,
+            layers,
+            heads,
+            mlp_ratio,
+            ls_init_value=ls_init_value,
+            act_layer=act_layer,
+            norm_layer=norm_layer,
+        )
+    
+        self.layer_norm = norm_layer(width)
+
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
+        batch_size, seq_len, _ = x.shape
+        x = self.input_proj(x)  # [batch_size, seq_len, width]
+        
+        if self.pool_type == 'cls':
+            cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [batch_size, 1, width]
+            x = torch.cat((cls_tokens, x), dim=1)  # [batch_size, seq_len + 1, width]
+            seq_len += 1
+
+            if attn_mask is not None:
+                cls_mask = torch.ones(batch_size * self.heads, 1, device=attn_mask.device)
+                attn_mask = torch.cat([cls_mask, attn_mask], dim=1)
+            
+        if seq_len <= self.pos_embed.shape[1]:
+            pos_embed = self.pos_embed[:, :seq_len, :]
+        else:
+            pos_embed = self.pos_embed[:, :, :]
+
+        x = x + pos_embed
+        x = x.permute(1, 0, 2)  # [seq_len, batch_size, width]
+        x = self.layer_norm(x)
+        
+        if attn_mask is not None:
+            attn_mask = ~attn_mask.bool()
+
+        x = self.transformer(x, attn_mask=attn_mask)
+        x = x.permute(1, 0, 2)
+        
+        if self.pool_type == 'cls':
+            pooled = x[:, 0, :]  # [batch_size, width]
+        elif self.pool_type == 'mean':
+            if attn_mask is not None:
+                attn_mask = ~attn_mask.bool()
+                mask = attn_mask.view(-1, self.heads, seq_len, seq_len)
+                mask = mask.float()
+                mask = mask.mean(dim=1)
+                mask = mask[:, :, 0].unsqueeze(-1)
+                sum_x = torch.sum(x * mask, dim=1)
+                count = torch.sum(mask, dim=1)
+                pooled = sum_x / count.clamp(min=1e-9)
+            else:
+                pooled = torch.mean(x, dim=1)
+        elif self.pool_type == 'max':
+            if attn_mask is not None:
+                mask = attn_mask.unsqueeze(-1)  # [batch_size, seq_len, 1]
+                x_masked = x.masked_fill(~mask.bool(), -1e9)
+                pooled = torch.max(x_masked, dim=1)[0]
+            else:
+                pooled = torch.max(x, dim=1)[0]
+        
+        return pooled

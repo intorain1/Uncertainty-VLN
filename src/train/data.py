@@ -25,12 +25,13 @@ from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler, IterableD
 from torch.utils.data.distributed import DistributedSampler
 from webdataset.filters import _shuffle
 from webdataset.tariterators import base_plus_ext, url_opener, tar_file_expander, valid_sample
+from torch.nn.utils.rnn import pad_sequence
+import torch.nn.functional as F
 
 try:
     import horovod.torch as hvd
 except ImportError:
     hvd = None
-
 
 class CsvDataset(Dataset):
     def __init__(self, input_filename, transforms, img_key, caption_key, sep="\t", tokenizer=None):
@@ -580,6 +581,8 @@ def get_dataset_fn(data_path, dataset_type):
         return get_csv_dataset
     elif dataset_type == "synthetic":
         return get_synthetic_dataset
+    elif dataset_type == "seq":
+        return get_image_sequence_dataset
     elif dataset_type == "auto":
         ext = data_path.split(".")[-1]
         if ext in ["csv", "tsv"]:
@@ -622,3 +625,190 @@ def get_data(args, preprocess_fns, epoch=0, tokenizer=None):
         )
 
     return data
+
+class ImageSequenceInstructionDataset(Dataset):
+    def __init__(
+        self, 
+        image_path,
+        json_path, 
+        transform=None,
+        image_size=224,
+        max_seq_len=10,
+        tokenizer=None
+    ):
+        self.image_path = image_path
+        self.transform = transform
+        self.image_size = image_size
+        self.max_seq_len = max_seq_len
+        self.tokenizer = tokenizer
+        
+        with open(json_path, 'r') as f:
+            self.raw_data = json.load(f)
+        
+        self.data = self._expand_samples()
+
+    def _expand_samples(self):
+        expanded_data = []
+        
+        for i in range(len(self.raw_data)):
+            item = self.raw_data[i]
+            sequence_path = item['path']
+            instructions = item['instructions']
+            scan = item['scan']
+            path_id = item['path_id']
+            if int(path_id) == 5577:
+                print('jumping this')
+                continue
+            
+            for _, instruction in enumerate(instructions):
+                expanded_data.append({
+                    'path': sequence_path,
+                    'instruction': instruction,
+                    'scan': scan,
+                    'path_id': path_id
+                })
+        
+        return expanded_data
+    
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def _load_image_sequence(self, scan, path):
+        image_files = []
+        for vp in path:
+            way = os.path.join(self.image_path, scan, f'{vp}_rgb.png')
+            image_files.append(way)
+
+        if len(image_files) > self.max_seq_len:
+            image_files = image_files[:self.max_seq_len]
+        
+        # Load and transform images
+        images = []
+        for img_file in image_files:
+            try:
+                image = Image.open(img_file).convert('RGB')
+                if self.transform:
+                    image = self.transform(image)
+                else:
+                    image = torch.randn(3, self.image_size, self.image_size)
+                assert image.shape == (3, 224, 224)
+                images.append(image)
+            except Exception as e:
+                # print(f"Error loading image {img_file}: {e}")
+                continue
+        
+        if len(images) == 0:
+            return None
+        
+        sequence_tensor = torch.stack(images) 
+        return sequence_tensor
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        sequence_path = item['path']
+        instruction = item['instruction']
+        scan = item['scan']
+        path_id = item['path_id']
+        
+        # Load image sequence
+        image_sequence = self._load_image_sequence(scan, sequence_path)  # [seq_len, 3, H, W]
+        if image_sequence is None:
+            with open('data.txt', 'a', encoding='utf-8') as f:
+                f.write(path_id)
+
+        # seq_len = image_sequence.shape[0]
+        
+        if self.tokenizer:
+            instruction_tokens = self.tokenizer(instruction)
+        else:
+            # raise NotImplementedError("Tokenizer is required for processing instructions.")
+            instruction_tokens = instruction
+        
+        return {
+            'image_sequence': image_sequence,  # [seq_len, 3, H, W]
+            'instruction': instruction_tokens,
+            # 'sequence_length': seq_len,
+        }
+
+def pad_image_sequences(sequences, target_length=10):
+    batch_size = len(sequences)
+    channels = sequences[0].shape[1]
+    height, width = 224, 224 
+    
+    padded = torch.zeros((batch_size, target_length, channels, height, width),
+                       dtype=sequences[0].dtype)
+    
+    for i, seq in enumerate(sequences):
+        seq_length = seq.shape[0]
+        use_length = min(seq_length, target_length)
+        padded[i, :use_length] = seq[:use_length]
+    
+    return padded  # [32, 10, 3, 224, 224]
+
+def collate_fn_image_sequence(batch):
+    image_sequences = [item['image_sequence'] for item in batch]
+    instructions = [item['instruction'] for item in batch]
+    sequence_lengths = [item['sequence_length'] for item in batch]
+    
+    padded_sequences = pad_image_sequences(image_sequences, target_length=10)
+
+    if padded_sequences.size(1) < 10:
+        pad_size = 10 - padded_sequences.size(1)
+        padded_sequences = F.pad(padded_sequences, (0, 0, 0, pad_size), value=0)
+
+    num_heads = 8
+    batch_size = len(batch)
+    max_len = 10
+
+    base_attention_mask = torch.zeros(batch_size, max_len, max_len)
+    for i, length in enumerate(sequence_lengths):
+        base_attention_mask[i, :length, :length] = 1
+    
+    attention_mask = base_attention_mask.repeat_interleave(num_heads, dim=0)
+    
+    if isinstance(instructions[0], torch.Tensor):
+        instructions = torch.cat(instructions, dim=0)
+    
+    assert attention_mask.shape == (128, 10, 10)
+    return padded_sequences,  attention_mask, instructions  
+    # [batch_size, max_seq_len, 3, H, W] # [batch_size, max_seq_len, max_seq_len] # [batch_size, instruction_len] or similar
+    
+
+def get_image_sequence_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
+    image_size = preprocess_fn.transforms[0].size if hasattr(preprocess_fn, 'transforms') else 224
+    json_path = '/home/user/intorains/annotations/R2R_train_enc.json'
+    
+    dataset = ImageSequenceInstructionDataset(
+        image_path=args.train_data,
+        json_path=json_path,
+        transform=preprocess_fn,
+        image_size=image_size,
+        max_seq_len=10,
+        tokenizer=tokenizer
+    )
+    
+    num_samples = len(dataset)
+    
+    sampler = None
+    if args.distributed and is_train:
+        from torch.utils.data.distributed import DistributedSampler
+        sampler = DistributedSampler(dataset)
+    
+    shuffle = is_train and sampler is None
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=sampler,
+        collate_fn=collate_fn_image_sequence,
+        drop_last=is_train,
+    )
+    
+    dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
+
+    return DataInfo(dataloader, sampler)

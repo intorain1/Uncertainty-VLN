@@ -5,7 +5,7 @@ import logging
 import numpy as np
 import torch
 
-from prolip import get_input_dtype
+from src.base import get_input_dtype
 from .precision import get_autocast
 
 from eccv_caption import Metrics

@@ -8,7 +8,7 @@ import logging
 import torch
 from tqdm import tqdm
 
-from prolip import get_input_dtype, get_tokenizer, build_zero_shot_classifier, \
+from src.base import get_input_dtype, get_tokenizer, build_zero_shot_classifier, \
     IMAGENET_CLASSNAMES, OPENAI_IMAGENET_TEMPLATES
 from .precision import get_autocast
 from .zero_shot_unc import eval_clsf_unc, run_ret

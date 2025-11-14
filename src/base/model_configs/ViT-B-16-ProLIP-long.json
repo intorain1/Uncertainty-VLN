@@ -28,5 +28,11 @@
             "eps": 1e-6
         },
         "init_unc_bias": -10
+    },
+    "ts_cfg": {
+        "width": 768,
+        "layers": 4,
+        "heads": 8,
+        "pool_type": "mean"
     }
 }

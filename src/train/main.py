@@ -31,15 +31,15 @@ try:
 except ImportError:
     hvd = None
 
-from prolip import create_model_and_transforms, get_tokenizer, create_loss
-from prolip.clip_model import trace_model
-from prolip_train.data import get_data
-from prolip_train.distributed import is_master, init_distributed_device, broadcast_object
-from prolip_train.logger import setup_logging
-from prolip_train.params import parse_args
-from prolip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
-from prolip_train.train import train_one_epoch, evaluate
-from prolip_train.file_utils import pt_load, check_exists, start_sync_process, remote_sync
+from src.base import create_model_and_transforms, get_tokenizer, create_loss
+from src.base.clip_model import trace_model
+from src.train.data import get_data
+from src.train.distributed import is_master, init_distributed_device, broadcast_object
+from src.train.logger import setup_logging
+from src.train.params import parse_args
+from src.train.scheduler import cosine_lr, const_lr, const_lr_cooldown
+from src.train.train import train_one_epoch, evaluate
+from src.train.file_utils import pt_load, check_exists, start_sync_process, remote_sync
 
 
 LATEST_CHECKPOINT_NAME = "epoch_latest.pt"
@@ -262,7 +262,7 @@ def main(args):
               '   pip install bitsandbytes triton'
               '   please make sure to use triton 2.0.0')
         import bitsandbytes as bnb
-        from prolip.utils import replace_linear
+        from base.utils import replace_linear
         print(f'=> replacing linear layers with {args.use_bnb_linear}')
         linear_replacement_cls = getattr(bnb.nn.triton_based_modules, args.use_bnb_linear)
         replace_linear(model, linear_replacement_cls)
@@ -434,7 +434,7 @@ def main(args):
     if 'train' not in data:
         # If using int8, convert to inference mode.
         if args.use_bnb_linear is not None:
-            from prolip.utils import convert_int8_model_to_inference_mode
+            from base.utils import convert_int8_model_to_inference_mode
             convert_int8_model_to_inference_mode(model)
         # Evaluate.
         evaluate(model, data, start_epoch, args, tb_writer=writer, tokenizer=tokenizer)

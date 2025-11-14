@@ -19,7 +19,7 @@ try:
 except ImportError:
     wandb = None
 
-from prolip import get_input_dtype, CLIP, CustomTextCLIP
+from src.base import get_input_dtype, CLIP, CustomTextCLIP
 from .distributed import is_master
 from .zero_shot import zero_shot_eval
 from .precision import get_autocast
@@ -94,9 +94,10 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
         if not args.skip_scheduler:
             scheduler(step)
 
-        images, texts = batch
+        images, image_mask, texts = batch
         images = images.to(device=device, dtype=input_dtype, non_blocking=True)
         texts = texts.to(device=device, non_blocking=True)
+        image_mask = image_mask.to(device=device, dtype=input_dtype, non_blocking=True)
 
         # ====================================================================== #
         #                XXX Newly added code for ProLIP                         #
@@ -120,7 +121,7 @@ def train_one_epoch(model, data, loss, epoch, optimizer, scaler, scheduler, dist
 
         if args.accum_freq == 1:
             with autocast():
-                model_out = model(images, texts)
+                model_out = model(images, image_mask, texts)
                 # ====================================================================== #
                 #                XXX Newly added code for ProLIP                         #
                 # ====================================================================== #
