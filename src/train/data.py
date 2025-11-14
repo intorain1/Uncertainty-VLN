@@ -715,7 +715,7 @@ class ImageSequenceInstructionDataset(Dataset):
         image_sequence = self._load_image_sequence(scan, sequence_path)  # [seq_len, 3, H, W]
         if image_sequence is None:
             with open('data.txt', 'a', encoding='utf-8') as f:
-                f.write(path_id)
+                f.write(str(path_id))
 
         # seq_len = image_sequence.shape[0]
         
