@@ -641,7 +641,7 @@ class ImageSequenceInstructionDataset(Dataset):
         self.image_size = image_size
         self.max_seq_len = max_seq_len
         self.tokenizer = tokenizer
-        
+        self.avoid_list = [1951, 3001, 3452, 5204, 5478, 5235, 783, 7103, 3946, 5577, 967, 2273, 1983, 14, 5721]
         with open(json_path, 'r') as f:
             self.raw_data = json.load(f)
         
@@ -656,8 +656,7 @@ class ImageSequenceInstructionDataset(Dataset):
             instructions = item['instructions']
             scan = item['scan']
             path_id = item['path_id']
-            if int(path_id) == 5577:
-                print('jumping this')
+            if int(path_id) in self.avoid_list:
                 continue
             
             for _, instruction in enumerate(instructions):
@@ -665,7 +664,7 @@ class ImageSequenceInstructionDataset(Dataset):
                     'path': sequence_path,
                     'instruction': instruction,
                     'scan': scan,
-                    'path_id': path_id
+                    # 'path_id': path_id
                 })
         
         return expanded_data
@@ -709,15 +708,15 @@ class ImageSequenceInstructionDataset(Dataset):
         sequence_path = item['path']
         instruction = item['instruction']
         scan = item['scan']
-        path_id = item['path_id']
+        # path_id = item['path_id']
         
         # Load image sequence
         image_sequence = self._load_image_sequence(scan, sequence_path)  # [seq_len, 3, H, W]
-        if image_sequence is None:
-            with open('data.txt', 'a', encoding='utf-8') as f:
-                f.write(str(path_id))
+        # if image_sequence is None:
+        #     with open('data.txt', 'a', encoding='utf-8') as f:
+        #         f.write(str(path_id) + '\n')
 
-        # seq_len = image_sequence.shape[0]
+        seq_len = image_sequence.shape[0]
         
         if self.tokenizer:
             instruction_tokens = self.tokenizer(instruction)
@@ -728,7 +727,7 @@ class ImageSequenceInstructionDataset(Dataset):
         return {
             'image_sequence': image_sequence,  # [seq_len, 3, H, W]
             'instruction': instruction_tokens,
-            # 'sequence_length': seq_len,
+            'sequence_length': seq_len,
         }
 
 def pad_image_sequences(sequences, target_length=10):
@@ -770,14 +769,15 @@ def collate_fn_image_sequence(batch):
     if isinstance(instructions[0], torch.Tensor):
         instructions = torch.cat(instructions, dim=0)
     
-    assert attention_mask.shape == (128, 10, 10)
-    return padded_sequences,  attention_mask, instructions  
+    # assert attention_mask.shape == (128, 10, 10)
+    return padded_sequences, attention_mask, instructions  
     # [batch_size, max_seq_len, 3, H, W] # [batch_size, max_seq_len, max_seq_len] # [batch_size, instruction_len] or similar
     
 
 def get_image_sequence_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     image_size = preprocess_fn.transforms[0].size if hasattr(preprocess_fn, 'transforms') else 224
-    json_path = '/home/user/intorains/annotations/R2R_train_enc.json'
+    # json_path = '/home/user/intorains/annotations/R2R_train_enc.json'
+    json_path = '/home/user/intorains/annotations/R2R_val_unseen_enc.json'
     
     dataset = ImageSequenceInstructionDataset(
         image_path=args.train_data,

@@ -1,13 +1,13 @@
-torchrun --nproc_per_node=1 \
+torchrun --nproc_per_node=4 \
     -m src.train.main \
     --train-data /home/user/intorains/Matterport3D_O \
     --train-num-samples 8000000 \
     --aug-cfg scale='(0.8, 1.0)' color_jitter='(0.32, 0.32, 0.32, 0.08)' color_jitter_prob=0.8 gray_scale_prob=0.2 \
     --beta1 0.9 \
     --beta2 0.95 \
-    --lr "1e-6" \
-    --epochs 32 \
-    --batch-size 16 \
+    --lr "1e-5" \
+    --epochs 1280 \
+    --batch-size 128 \
     --warmup 200 \
     --wd 0.01 \
     --zeroshot-frequency 1 \
@@ -26,11 +26,13 @@ torchrun --nproc_per_node=1 \
     --delete-previous-checkpoint \
     --prolip \
     --force-resize-pos-emb \
-
+    --lock-image \
+    --pretrained /root/.cache/huggingface/hub/models--SanghyukChun--ProLIP-ViT-B-16-DC-1B-12_8B/snapshots/0c0b4d6b5e29f8f3b5e5f3a01a2b04409e060d0d \
+    --torchcompile 
         # --drop-ratio 0.125 \
     # --drop-prob 0.75 \
-    # --torchcompile
-        # --pretrained $PATH_TO_PRETRAINED \
+
+        
 
         # --imagenet-val $IMAGENET_PATH \
     # --coco-test $COCO_PATH \

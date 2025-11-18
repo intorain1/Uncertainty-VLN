@@ -271,6 +271,8 @@ class ProLIP(nn.Module):
     def set_grad_checkpointing(self, enable=True):
         self.visual.set_grad_checkpointing(enable)
         self.text.set_grad_checkpointing(enable)
+        self.ts_mean.set_grad_checkpointing(enable)
+        self.ts_std.set_grad_checkpointing(enable)
 
     def encode_image(self, image, normalize: bool = False, image_mask_ratio: float = None):
         features = self.visual(image, image_mask_ratio=image_mask_ratio)

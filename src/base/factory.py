@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import numpy as np
 import torch
 
-from .model import ProLIP, convert_weights_to_lp, \
+from .model import ProLIP, ProLIPHF, convert_weights_to_lp, \
     get_cast_dtype, resize_prolip_pos_embed, resize_prolip_text_pos_embed, resize_prolip_tok_embed, set_model_preprocess_cfg
 from .clip_model import CLIP, CustomTextCLIP, convert_to_custom_text_state_dict
 from .loss import ProLIPLoss
@@ -262,7 +262,7 @@ def create_model(
     elif custom_text:
         model = CustomTextCLIP(**model_cfg, cast_dtype=cast_dtype)
     else:
-        model = ProLIP(**model_cfg, cast_dtype=cast_dtype)
+        model = ProLIPHF(**model_cfg, cast_dtype=cast_dtype)
 
     if precision in ("fp16", "bf16"):
         dtype = torch.float16 if 'fp16' in precision else torch.bfloat16
@@ -294,8 +294,12 @@ def create_model(
         checkpoint_path = pretrained
 
         if checkpoint_path:
-            logging.info(f'Loading pretrained {model_name} weights ({pretrained}).')
-            load_checkpoint(model, checkpoint_path, force_resize=force_resize_pos_emb, n_cls=n_cls)
+            if 'huggingface' in checkpoint_path:
+                logging.info(f'Loading pretrained {model_name} weights ({pretrained}).')
+                model.from_pretrained(checkpoint_path)
+            else:
+                logging.info(f'Loading pretrained {model_name} weights ({pretrained}).')
+                load_checkpoint(model, checkpoint_path, force_resize=force_resize_pos_emb, n_cls=n_cls)
         else:
             error_str = (
                 f'Pretrained weights ({pretrained}) not found for model {model_name}.')

@@ -304,10 +304,10 @@ def main(args):
         if args.ddp_static_graph:
             # this doesn't exist in older PyTorch, arg only added if enabled
             ddp_args['static_graph'] = True
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device], **ddp_args)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[device],  find_unused_parameters=True, **ddp_args)
 
         if args.distill:
-            dist_model = torch.nn.parallel.DistributedDataParallel(dist_model, device_ids=[device], **ddp_args)
+            dist_model = torch.nn.parallel.DistributedDataParallel(dist_model, device_ids=[device],  find_unused_parameters=True, **ddp_args)
 
     # create optimizer and scaler
     optimizer = None
@@ -320,8 +320,33 @@ def main(args):
         include = lambda n, p: not exclude(n, p)
 
         named_parameters = list(model.named_parameters())
+
+        for param in model.parameters():
+            param.requires_grad = False
+
+        for param in model.module.text.parameters():
+            param.requires_grad = True
+            
+        for param in model.module.ts_mean.parameters():
+            param.requires_grad = True
+
+        for param in model.module.ts_std.parameters():
+            param.requires_grad = True
+
+        # for name, param in model.named_parameters():
+        #     if param.requires_grad:
+        #         print(f"  {name}: {param.shape}")
+
         gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
         rest_params = [p for n, p in named_parameters if include(n, p) and p.requires_grad]
+        
+        gain_or_bias_params_numel = sum(p.numel() for p in gain_or_bias_params)
+        rest_params_numel = sum(p.numel() for p in rest_params)
+        all_params_numel = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        # print("\nTotal trainable parameters:", sum(p.numel() for p in model.parameters() if p.requires_grad))
+        # print("\ngain_or_bias_numel", gain_or_bias_params_numel)
+        # print("\nrest_params_numel", rest_params_numel)
+        assert (gain_or_bias_params_numel + rest_params_numel) == all_params_numel
 
         if args.adamp:
             from adamp import AdamP

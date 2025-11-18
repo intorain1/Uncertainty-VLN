@@ -717,6 +717,10 @@ class TSTransformer(nn.Module):
     
         self.layer_norm = norm_layer(width)
 
+    @torch.jit.ignore
+    def set_grad_checkpointing(self, enable=True):
+        self.transformer.grad_checkpointing = enable
+        
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None):
         batch_size, seq_len, _ = x.shape
         x = self.input_proj(x)  # [batch_size, seq_len, width]
